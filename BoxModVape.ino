@@ -13,9 +13,10 @@
 
 // Software settings
 #define INITIAL_CALIBRATION 0
-#define VAPE_THRESHOLD      5000
-#define SLEEP_TIME          60000
 #define BATTERY_PERCENTAGE  1
+#define FIRE_LIMIT_TIME     5000
+#define STANDBY_TIME        60000
+#define LOCK_TIME           3000
 #define VOLTS_STEP          0.05
 #define WATTS_STEP          1
 #define AMPS_STEP           1
@@ -38,6 +39,7 @@
 #define DISPLAY_POWER_PIN   13
 
 // System settings
+#define VALUES_UPDATE_TIME  50
 #define VOLTAGE_ARR_SIZE    10
 #define PWM_ARR_SIZE        10
 #define VCC_CONST_POSITION  (0)
@@ -56,7 +58,7 @@ TM74HC595Display disp(SCLK_PIN, RCLK_PIN, DIO_PIN);
 int amp, voltage, watt;
 float vcc_const, volt, ohm;
 byte last_fire_mode, last_setting_mode;
-unsigned long voltage_timer, standby_timer, threshold_timer;
+unsigned long standby_timer, threshold_timer;
 bool settings_mode, fire_button_state, fire_button_signal, sleeping, allow_fire, millis_sync;
 word voltage_array[VOLTAGE_ARR_SIZE], PWM_array[PWM_ARR_SIZE], PWM, voltage_drop;
 std::map <char, byte> symbols;
@@ -126,18 +128,16 @@ void loop() {
   if (sleeping) {
     WakePuzzle();
   } else {
-    PWM = GetPWM();
-    millis_sync = !(millis() % 100);
+    millis_sync = !(millis() % VALUES_UPDATE_TIME);
     fire_button_signal = !digitalRead(FIRE_BUTTON_PIN);
-    if (millis() - voltage_timer >= 20) {
-      voltage_timer = millis();
-      MeasureVoltage();
-      voltage = GetVoltage();
-    }
     if (millis_sync) {
+      if (!allow_fire && mode != HELL) {
+        MeasureVoltage();
+      }
+      voltage = GetVoltage();
       switch (mode) {
         case VARIVOLT: {
-            volt = constrain(volt, volt, (int)(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+            volt = constrain(volt, 0, (int)(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
             voltage_drop = round(volt * 1000.0 / ohm * BATTERY_RESISTANCE);
             AddPWM(round(volt * 1000.0 / (float)voltage * 1023));
             break;
@@ -157,19 +157,10 @@ void loop() {
             break;
           }
       }
+      PWM = GetPWM();
     }
     if (millis_sync && !mode_button.isLongPressed() && !allow_fire) {
       ShowMainScreen();
-    }
-    if (allow_fire) {
-      if ((mode == VARIVOLT || mode == VARIWATT) && (ohm > 0) && (PWM > 0)) {
-        Timer1.pwm(MOSFET_POWER_PIN, PWM);
-        ShowFireAnimation();
-      } else if (mode == HELL && ohm > 0) {
-        digitalWrite(MOSFET_POWER_PIN, HIGH);
-        ShowFireAnimation();
-      }
-      standby_timer = millis();
     }
     if (!fire_button_state && fire_button_signal) {
       fire_button_state = true;
@@ -182,15 +173,26 @@ void loop() {
       allow_fire = false;
       DisableAllFire();
     }
-    if (allow_fire && millis() - threshold_timer >= VAPE_THRESHOLD) {
+    if (allow_fire) {
+      if ((mode == VARIVOLT || mode == VARIWATT) && (ohm > 0) && (PWM > 0)) {
+        Timer1.pwm(MOSFET_POWER_PIN, PWM);
+        ShowFireAnimation();
+      } else if (mode == HELL && ohm > 0) {
+        digitalWrite(MOSFET_POWER_PIN, HIGH);
+        ShowFireAnimation();
+      }
+      standby_timer = millis();
+    }
+    if (allow_fire && millis() - threshold_timer >= FIRE_LIMIT_TIME) {
       allow_fire = false;
       DisableAllFire();
     }
-    if (millis() - standby_timer >= SLEEP_TIME) {
+    if (millis() - standby_timer >= STANDBY_TIME) {
       DisplaySlide(display_shortcuts[BYE], false);
       GoodNight();
     }
     if (voltage < BATTERY_LOW) {
+      DisableAllFire();
       DisplaySlide(display_shortcuts[LOWB], false);
       GoodNight();
     }
@@ -205,7 +207,7 @@ void ReduceValue() {
         if (ohm > 0) {
           volt -= VOLTS_STEP;
           volt = round(volt / VOLTS_STEP) * VOLTS_STEP;
-          volt = constrain(volt, 0, (int)(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+          volt = constrain(volt, 0, (int)((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
         } else {
           volt = 0;
         }
@@ -214,7 +216,7 @@ void ReduceValue() {
     case VARIWATT: {
         if (ohm > 0) {
           watt -= WATTS_STEP;
-          watt = constrain(watt, 0, voltage / 1000.0 / ohm * voltage / 1000.0);
+          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0 / ohm * (voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0));
         } else {
           watt = 0;
         }
@@ -228,7 +230,7 @@ void ReduceValue() {
     case OHM: {
         if (amp > 0) {
           ohm -= OHMS_STEP;
-          ohm = constrain(ohm, (float)BATTERY_MAX / (amp * 1000.0), 1);
+          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * BATTERY_RESISTANCE)) / (amp * 1000.0), 1);
         } else {
           ohm = 0;
         }
@@ -244,7 +246,7 @@ void IncreaseValue() {
         if (ohm > 0) {
           volt += VOLTS_STEP;
           volt = round(volt / VOLTS_STEP) * VOLTS_STEP;
-          volt = constrain(volt, 0, (int)(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+          volt = constrain(volt, 0, (int)((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
         } else {
           volt = 0;
         }
@@ -253,7 +255,7 @@ void IncreaseValue() {
     case VARIWATT: {
         if (ohm > 0) {
           watt += WATTS_STEP;
-          watt = constrain(watt, 0, voltage / 1000.0 / ohm * voltage / 1000.0);
+          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0 / ohm * (voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0));
         } else {
           watt = 0;
         }
@@ -267,7 +269,7 @@ void IncreaseValue() {
     case OHM: {
         if (amp > 0) {
           ohm += OHMS_STEP;
-          ohm = constrain(ohm, (float)BATTERY_MAX / (amp * 1000.0), 1);
+          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * BATTERY_RESISTANCE)) / (amp * 1000.0), 1);
         } else {
           ohm = 0;
         }
@@ -363,7 +365,7 @@ void SleepPuzzle() {
   unsigned long wake_timer = millis();
   bool sleeping = 0, button_signal, button_state;
   byte click_count = 1;
-  while (millis() - wake_timer < 3000 && !sleeping) {
+  while (millis() - wake_timer < LOCK_TIME && !sleeping) {
     button_signal = !digitalRead(FIRE_BUTTON_PIN);
     if (!button_state && button_signal) {
       button_state = true;
@@ -396,7 +398,7 @@ void WakePuzzle() {
   unsigned long wake_timer = millis();
   bool allow_wakeup = 0, button_signal, button_state;
   byte click_count = 0;
-  while ((millis() - wake_timer < 3000) && !allow_wakeup) {
+  while ((millis() - wake_timer < LOCK_TIME) && !allow_wakeup) {
     button_signal = !digitalRead(FIRE_BUTTON_PIN);
     if (!button_state && button_signal) {
       button_state = true;
@@ -445,7 +447,7 @@ void ShowMainScreen() {
       }
     case HELL: {
         disp.set(symbols[display_shortcuts[HELL][0]], 3);
-        disp.digit4(round(voltage / 1000.0 / ohm * voltage / 1000.0));
+        disp.digit4(round((voltage - voltage_drop) / 1000.0 / ohm * (voltage - voltage_drop) / 1000.0));
         break;
       }
     case AMP: {
