@@ -131,7 +131,7 @@ void loop() {
     millis_sync = !(millis() % VALUES_UPDATE_TIME);
     fire_button_signal = !digitalRead(FIRE_BUTTON_PIN);
     if (millis_sync) {
-      if (!allow_fire && mode != HELL) {
+      if (!(allow_fire && mode == HELL)) {
         MeasureVoltage();
       }
       voltage = GetVoltage();
