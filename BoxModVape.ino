@@ -111,9 +111,6 @@ void setup() {
   watt = EEPROM.readByte(WATT_POSITION);
   amp = EEPROM.readByte(AMP_POSITION);
   ohm = EEPROM.readFloat(OHM_POSITION);
-  for (byte i = 0; i < VOLTAGE_ARR_SIZE; i++) {
-    MeasureVoltage();
-  }
   voltage = GetVoltage();
   last_fire_mode = mode;
   last_setting_mode = AMP;
@@ -131,9 +128,7 @@ void loop() {
     millis_sync = !(millis() % VALUES_UPDATE_TIME);
     fire_button_signal = !digitalRead(FIRE_BUTTON_PIN);
     if (millis_sync) {
-      if (!(allow_fire && mode == HELL)) {
-        MeasureVoltage();
-      }
+      MeasureVoltage();
       voltage = GetVoltage();
       switch (mode) {
         case VARIVOLT: {
@@ -310,6 +305,12 @@ void DisableAllFire() {
   digitalWrite(MOSFET_POWER_PIN, LOW);
 }
 
+void ResetVoltage() {
+  for (byte i = 0; i < VOLTAGE_ARR_SIZE; i++) {
+    voltage_array[i] = 0;
+  }
+}
+
 void MeasureVoltage() {
   for (byte i = 0; i < VOLTAGE_ARR_SIZE - 1; i++) {
     voltage_array[i] = voltage_array[i + 1];
@@ -319,6 +320,9 @@ void MeasureVoltage() {
 
 int GetVoltage() {
   word sum = 0;
+  while (voltage_array[0] == 0) {
+    MeasureVoltage();
+  }
   for (byte i = 0; i < VOLTAGE_ARR_SIZE; i++) {
     sum += voltage_array[i];
   }
@@ -344,8 +348,9 @@ void GoodNight() {
   DisableAllFire();
   sleeping = true;
   disp.clear();
-  delay(2);
+  delay(5);
   digitalWrite(DISPLAY_POWER_PIN, LOW);
+  delay(5);
   EEPROM.updateByte(MODE_POSITION, last_fire_mode);
   EEPROM.updateFloat(VOLT_POSITION, volt);
   EEPROM.updateByte(WATT_POSITION, watt);
@@ -427,6 +432,8 @@ void WakePuzzle() {
     mode = last_fire_mode;
     settings_mode = false;
     standby_timer = millis();
+    ResetVoltage();
+    voltage = GetVoltage();
   } else {
     GoodNight();
   }
@@ -630,3 +637,4 @@ long ReadVCC() {
   result = vcc_const * 1023 * 1000 / result;
   return result;
 }
+
