@@ -3,10 +3,10 @@
 //      Author - Ihor Chaban      //
 ////////////////////////////////////
 
+#include <ArduinoSTL.h>
 #include <EEPROMex.h>
 #include <LowPower.h>
 #include <OneButton.h>
-#include <StandardCplusplus.h>
 #include <map>
 #include <TimerOne.h>
 #include <TM74HC595Display.h>
@@ -637,4 +637,3 @@ long ReadVCC() {
   result = vcc_const * 1023 * 1000 / result;
   return result;
 }
-
