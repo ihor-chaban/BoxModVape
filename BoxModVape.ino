@@ -20,12 +20,12 @@
 #define VOLTS_STEP          0.05
 #define WATTS_STEP          1
 #define AMPS_STEP           1
-#define OHMS_STEP           0.01
+#define OHMS_STEP           0.005
 
 // Battery settings
 #define BATTERY_LOW         2800
 #define BATTERY_MAX         4200
-#define BATTERY_RESISTANCE  0.0135065
+#define BATTERY_RESISTANCE  0.0075
 
 // Hardware settings
 #define FIRE_BUTTON_PIN     2
@@ -43,11 +43,11 @@
 #define VOLTAGE_ARR_SIZE    10
 #define PWM_ARR_SIZE        10
 #define VCC_CONST_POSITION  (0)
-#define MODE_POSITION       (sizeof(vcc_const))
-#define VOLT_POSITION       (sizeof(vcc_const) + sizeof(byte))
-#define WATT_POSITION       (sizeof(vcc_const) + sizeof(byte) + sizeof(volt))
-#define AMP_POSITION        (sizeof(vcc_const) + sizeof(byte) + sizeof(volt) + sizeof(watt))
-#define OHM_POSITION        (sizeof(vcc_const) + sizeof(byte) + sizeof(volt) + sizeof(watt) + sizeof(amp))
+#define MODE_POSITION       (VCC_CONST_POSITION + sizeof(vcc_const))
+#define VOLT_POSITION       (MODE_POSITION + sizeof(byte))
+#define WATT_POSITION       (VOLT_POSITION + sizeof(volt))
+#define AMP_POSITION        (WATT_POSITION + sizeof(watt))
+#define OHM_POSITION        (AMP_POSITION + sizeof(amp))
 
 OneButton fire_button(FIRE_BUTTON_PIN, true);
 OneButton mode_button(MODE_BUTTON_PIN, true);
@@ -92,7 +92,9 @@ void setup() {
   mode_button.attachDuringLongPress(ShowVoltage);
   mode_button.attachDoubleClick(ChangeSettingsMode);
   down_button.attachClick(ReduceValue);
+  down_button.attachDuringLongPress(ReduceValueL);
   up_button.attachClick(IncreaseValue);
+  up_button.attachDuringLongPress(IncreaseValueL);
   fire_button.attachDoubleClick(SleepPuzzle);
   InitDisplaySymbols();
   InitDisplayShortcuts();
@@ -234,6 +236,14 @@ void ReduceValue() {
   }
 }
 
+void ReduceValueL() {
+  static unsigned long values_longpress_timer = millis();
+  if (abs(millis() - values_longpress_timer) > 100) {
+    values_longpress_timer = millis();
+    ReduceValue();
+  }
+}
+
 void IncreaseValue() {
   standby_timer = millis();
   switch (mode) {
@@ -270,6 +280,14 @@ void IncreaseValue() {
         }
         break;
       }
+  }
+}
+
+void IncreaseValueL() {
+  static unsigned long values_longpress_timer = millis();
+  if (abs(millis() - values_longpress_timer) > 100) {
+    values_longpress_timer = millis();
+    IncreaseValue();
   }
 }
 
@@ -349,8 +367,6 @@ void GoodNight() {
   sleeping = true;
   disp.clear();
   delay(5);
-  digitalWrite(DISPLAY_POWER_PIN, LOW);
-  delay(5);
   EEPROM.updateByte(MODE_POSITION, last_fire_mode);
   EEPROM.updateFloat(VOLT_POSITION, volt);
   EEPROM.updateByte(WATT_POSITION, watt);
@@ -361,7 +377,6 @@ void GoodNight() {
 }
 
 void WakeUp() {
-  digitalWrite(DISPLAY_POWER_PIN, HIGH);
   detachInterrupt(FIRE_BUTTON_PIN);
 }
 
@@ -463,8 +478,12 @@ void ShowMainScreen() {
         break;
       }
     case OHM: {
-        disp.set(symbols[display_shortcuts[OHM][0]], 3);
-        disp.float_dot(ohm, 2);
+        disp.set((ohm < 1) ? (symbols[display_shortcuts[OHM][0]] & 0x7F) : (symbols[display_shortcuts[OHM][0]]), 3);
+        if (ohm < 1) {
+          disp.digit4(ohm * 1000, 0);
+        } else {
+          disp.float_dot(ohm, 2);
+        }
         break;
       }
   }
