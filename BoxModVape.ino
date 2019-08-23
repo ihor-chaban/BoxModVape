@@ -21,6 +21,7 @@
 #define WATTS_STEP          1
 #define AMPS_STEP           1
 #define OHMS_STEP           0.005
+#define F_B_DEBOUNCE_TIME   50
 
 // Battery settings
 #define BATTERY_LOW         2800
@@ -39,7 +40,7 @@
 #define DISPLAY_POWER_PIN   13
 
 // System settings
-#define VALUES_UPDATE_TIME  50
+#define VALUES_UPD_INTERVAL 50
 #define VOLTAGE_ARR_SIZE    10
 #define PWM_ARR_SIZE        10
 #define VCC_CONST_POSITION  (0)
@@ -58,8 +59,8 @@ TM74HC595Display disp(SCLK_PIN, RCLK_PIN, DIO_PIN);
 int amp, voltage, watt;
 float vcc_const, volt, ohm;
 byte last_fire_mode, last_setting_mode;
-unsigned long standby_timer, threshold_timer;
-bool settings_mode, fire_button_state, fire_button_signal, sleeping, allow_fire, millis_sync;
+unsigned long standby_time, fire_time, values_update_time, f_b_debounce_time;
+bool settings_mode, f_b_state, f_b_last_state, f_b_reading, sleeping, allow_fire;
 word voltage_array[VOLTAGE_ARR_SIZE], PWM_array[PWM_ARR_SIZE], PWM, voltage_drop;
 std::map <char, byte> symbols;
 std::map <byte, char*> display_shortcuts;
@@ -120,16 +121,15 @@ void setup() {
     DisplaySlide(display_shortcuts[LOWB], false);
     GoodNight();
   }
-  standby_timer = millis();
+  standby_time = millis();
 }
 
 void loop() {
-  if (sleeping) {
-    WakePuzzle();
-  } else {
-    millis_sync = !(millis() % VALUES_UPDATE_TIME);
-    fire_button_signal = !digitalRead(FIRE_BUTTON_PIN);
-    if (millis_sync) {
+  CheckButtons();
+  if (!sleeping) {
+    f_b_reading = !digitalRead(FIRE_BUTTON_PIN);
+    if (millis() - values_update_time >= VALUES_UPD_INTERVAL) {
+      values_update_time = millis();
       MeasureVoltage();
       voltage = GetVoltage();
       switch (mode) {
@@ -155,18 +155,25 @@ void loop() {
           }
       }
       PWM = GetPWM();
+      if (!mode_button.isLongPressed() && !allow_fire) {
+        ShowMainScreen();
+      }
     }
-    if (millis_sync && !mode_button.isLongPressed() && !allow_fire) {
-      ShowMainScreen();
+    if (f_b_reading != f_b_last_state) {
+      f_b_debounce_time = millis();
     }
-    if (!fire_button_state && fire_button_signal) {
-      fire_button_state = true;
-      allow_fire = true;
-      threshold_timer = millis();
-      delay(50);
+    if (millis() - f_b_debounce_time >= F_B_DEBOUNCE_TIME) {
+      if (f_b_reading != f_b_state) {
+        f_b_state = f_b_reading;
+        if (f_b_state == HIGH) {
+          allow_fire = true;
+          fire_time = millis();
+        }
+      }
     }
-    if (fire_button_state && !fire_button_signal) {
-      fire_button_state = false;
+    f_b_last_state = f_b_reading;
+    if (f_b_state && !f_b_last_state) {
+      f_b_state = false;
       allow_fire = false;
       DisableAllFire();
     }
@@ -178,13 +185,13 @@ void loop() {
         digitalWrite(MOSFET_POWER_PIN, HIGH);
         ShowFireAnimation();
       }
-      standby_timer = millis();
+      standby_time = millis();
     }
-    if (allow_fire && millis() - threshold_timer >= FIRE_LIMIT_TIME) {
+    if (allow_fire && millis() - fire_time >= FIRE_LIMIT_TIME) {
       allow_fire = false;
       DisableAllFire();
     }
-    if (millis() - standby_timer >= STANDBY_TIME) {
+    if (millis() - standby_time >= STANDBY_TIME) {
       DisplaySlide(display_shortcuts[BYE], false);
       GoodNight();
     }
@@ -193,12 +200,13 @@ void loop() {
       DisplaySlide(display_shortcuts[LOWB], false);
       GoodNight();
     }
+  } else {
+    WakePuzzle();
   }
-  CheckButtons();
 }
 
 void ReduceValue() {
-  standby_timer = millis();
+  standby_time = millis();
   switch (mode) {
     case VARIVOLT: {
         if (ohm > 0) {
@@ -238,14 +246,14 @@ void ReduceValue() {
 
 void ReduceValueL() {
   static unsigned long values_longpress_timer = millis();
-  if (abs(millis() - values_longpress_timer) > 100) {
+  if (millis() - values_longpress_timer >= 100) {
     values_longpress_timer = millis();
     ReduceValue();
   }
 }
 
 void IncreaseValue() {
-  standby_timer = millis();
+  standby_time = millis();
   switch (mode) {
     case VARIVOLT: {
         if (ohm > 0) {
@@ -285,14 +293,14 @@ void IncreaseValue() {
 
 void IncreaseValueL() {
   static unsigned long values_longpress_timer = millis();
-  if (abs(millis() - values_longpress_timer) > 100) {
+  if (millis() - values_longpress_timer >= 100) {
     values_longpress_timer = millis();
     IncreaseValue();
   }
 }
 
 void ChangeMode() {
-  standby_timer = millis();
+  standby_time = millis();
   mode++;
   if (!settings_mode) {
     last_fire_mode = mode;
@@ -303,7 +311,7 @@ void ChangeMode() {
 }
 
 void ChangeSettingsMode() {
-  standby_timer = millis();
+  standby_time = millis();
   if (!settings_mode) {
     last_fire_mode = mode;
   } else {
@@ -383,27 +391,36 @@ void WakeUp() {
 void SleepPuzzle() {
   DisableAllFire();
   unsigned long wake_timer = millis();
-  bool sleeping = 0, button_signal, button_state;
-  byte click_count = 1;
+  unsigned long display_upd_timer = millis();
+  bool sleeping = 0;
+  byte click_count = 2;
   while (millis() - wake_timer < LOCK_TIME && !sleeping) {
-    button_signal = !digitalRead(FIRE_BUTTON_PIN);
-    if (!button_state && button_signal) {
-      button_state = true;
-      delay(50);
+    f_b_reading = digitalRead(FIRE_BUTTON_PIN);
+    if (f_b_reading != f_b_last_state) {
+      f_b_debounce_time = millis();
     }
-    if (button_state && !button_signal) {
-      button_state = false;
-      click_count++;
+    if (millis() - f_b_debounce_time >= F_B_DEBOUNCE_TIME) {
+      if (f_b_reading != f_b_state) {
+        f_b_state = f_b_reading;
+        if (f_b_state) {
+          click_count++;
+        }
+      }
     }
-    switch (click_count) {
-      case 1: DisplayPrint(display_shortcuts[V___]);
-        break;
-      case 2: DisplayPrint(display_shortcuts[VA__]);
-        break;
-      case 3: DisplayPrint(display_shortcuts[VAP_]);
-        break;
-      case 4: DisplayPrint(display_shortcuts[VAPE]);
-        break;
+    f_b_last_state = f_b_reading;
+    if (millis() - display_upd_timer >= VALUES_UPD_INTERVAL) {
+      display_upd_timer = millis();
+      disp.clear();
+      switch (click_count) {
+        case 1: DisplayPrint(display_shortcuts[V___]);
+          break;
+        case 2: DisplayPrint(display_shortcuts[VA__]);
+          break;
+        case 3: DisplayPrint(display_shortcuts[VAP_]);
+          break;
+        case 4: DisplayPrint(display_shortcuts[VAPE]);
+          break;
+      }
     }
     if (click_count > 4) {
       sleeping = true;
@@ -416,27 +433,36 @@ void SleepPuzzle() {
 
 void WakePuzzle() {
   unsigned long wake_timer = millis();
-  bool allow_wakeup = 0, button_signal, button_state;
+  unsigned long display_upd_timer = millis();
+  bool allow_wakeup = 0;
   byte click_count = 0;
   while ((millis() - wake_timer < LOCK_TIME) && !allow_wakeup) {
-    button_signal = !digitalRead(FIRE_BUTTON_PIN);
-    if (!button_state && button_signal) {
-      button_state = true;
-      delay(50);
+    f_b_reading = digitalRead(FIRE_BUTTON_PIN);
+    if (f_b_reading != f_b_last_state) {
+      f_b_debounce_time = millis();
     }
-    if (button_state && !button_signal) {
-      button_state = false;
-      click_count++;
+    if (millis() - f_b_debounce_time >= F_B_DEBOUNCE_TIME) {
+      if (f_b_reading != f_b_state) {
+        f_b_state = f_b_reading;
+        if (f_b_state) {
+          click_count++;
+        }
+      }
     }
-    switch (click_count) {
-      case 1: DisplayPrint(display_shortcuts[V___]);
-        break;
-      case 2: DisplayPrint(display_shortcuts[VA__]);
-        break;
-      case 3: DisplayPrint(display_shortcuts[VAP_]);
-        break;
-      case 4: DisplayPrint(display_shortcuts[VAPE]);
-        break;
+    f_b_last_state = f_b_reading;
+    if (millis() - display_upd_timer >= VALUES_UPD_INTERVAL) {
+      display_upd_timer = millis();
+      disp.clear();
+      switch (click_count) {
+        case 1: DisplayPrint(display_shortcuts[V___]);
+          break;
+        case 2: DisplayPrint(display_shortcuts[VA__]);
+          break;
+        case 3: DisplayPrint(display_shortcuts[VAP_]);
+          break;
+        case 4: DisplayPrint(display_shortcuts[VAPE]);
+          break;
+      }
     }
     if (click_count > 4) {
       allow_wakeup = true;
@@ -446,7 +472,7 @@ void WakePuzzle() {
     sleeping = false;
     mode = last_fire_mode;
     settings_mode = false;
-    standby_timer = millis();
+    standby_time = millis();
     ResetVoltage();
     voltage = GetVoltage();
   } else {
@@ -479,13 +505,20 @@ void ShowMainScreen() {
       }
     case OHM: {
         disp.set((ohm < 1) ? (symbols[display_shortcuts[OHM][0]] & 0x7F) : (symbols[display_shortcuts[OHM][0]]), 3);
-        if (ohm < 1) {
+        if (ohm < 0.01) {
+          disp.set(symbols['O'], 2);
+          disp.set(symbols['O'], 1);
+          disp.digit2(ohm * 1000, 0);
+        } else if (ohm < 0.1) {
+          disp.set(symbols['O'], 2);
+          disp.digit2(ohm * 1000, 0);
+        } else if (ohm < 1) {
           disp.digit4(ohm * 1000, 0);
         } else {
           disp.float_dot(ohm, 2);
         }
-        break;
       }
+      break;
   }
 }
 
@@ -516,8 +549,10 @@ void ShowModeTitle() {
 }
 
 void ShowVoltage() {
-  standby_timer = millis();
-  if (millis() % 100 == 0) {
+  static unsigned long voltage_upd_time;
+  standby_time = millis();
+  if (millis() - voltage_upd_time >= VALUES_UPD_INTERVAL) {
+    voltage_upd_time = millis();
     disp.clear();
     disp.set(symbols['b'], 3);
     if (BATTERY_PERCENTAGE) {
