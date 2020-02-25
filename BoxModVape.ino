@@ -1,22 +1,28 @@
-////////////////////////////////////
-//          Box Mod Vape          //
-//      Author - Ihor Chaban      //
-////////////////////////////////////
+/*
+    Box Mod Vape v3.0
+      - added options to adjust fire frequency and display update frequency
+      - fire frequency changed to 20 kHz
+      - display update frequency changed to 30 Hz
+    Author: Ihor Chaban
+    Jan 2020
+*/
 
 #include <ArduinoSTL.h>
 #include <EEPROMex.h>
 #include <LowPower.h>
-#include <OneButton.h>
 #include <map>
+#include <OneButton.h>
 #include <TimerOne.h>
 #include <TM74HC595Display.h>
 
 // Software settings
 #define INITIAL_CALIBRATION 0
 #define BATTERY_PERCENTAGE  1
-#define FIRE_LIMIT_TIME     5000
 #define STANDBY_TIME        60000
 #define LOCK_TIME           3000
+#define FIRE_LIMIT_TIME     5000
+#define FIRE_FREQUENCY      20000
+#define DISPLAY_FREQUENCY   30
 #define VOLTS_STEP          0.05
 #define WATTS_STEP          1
 #define AMPS_STEP           1
@@ -24,9 +30,9 @@
 #define F_B_DEBOUNCE_TIME   50
 
 // Battery settings
-#define BATTERY_LOW         2800
+#define BATTERY_MIN         2800
 #define BATTERY_MAX         4200
-#define BATTERY_RESISTANCE  0.0075
+#define BATTERY_RESISTANCE  0.015
 
 // Hardware settings
 #define FIRE_BUTTON_PIN     2
@@ -99,8 +105,8 @@ void setup() {
   fire_button.attachDoubleClick(SleepPuzzle);
   InitDisplaySymbols();
   InitDisplayShortcuts();
-  Timer1.initialize(1500);
-  Timer1.attachInterrupt(DisplayPing);
+  InitTimer2();
+  Timer1.initialize(round(1000000.0 / FIRE_FREQUENCY));
   DisplaySlide(display_shortcuts[VAPE], false);
   vcc_const = EEPROM.readFloat(VCC_CONST_POSITION);
   if (!vcc_const) {
@@ -117,7 +123,7 @@ void setup() {
   voltage = GetVoltage();
   last_fire_mode = mode;
   last_setting_mode = AMP;
-  if (voltage < BATTERY_LOW) {
+  if (voltage < BATTERY_MIN) {
     DisplaySlide(display_shortcuts[LOWB], false);
     GoodNight();
   }
@@ -134,7 +140,7 @@ void loop() {
       voltage = GetVoltage();
       switch (mode) {
         case VARIVOLT: {
-            volt = constrain(volt, 0, (int)(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+            volt = constrain(volt, 0, round(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
             voltage_drop = round(volt * 1000.0 / ohm * BATTERY_RESISTANCE);
             AddPWM(round(volt * 1000.0 / (float)voltage * 1023));
             break;
@@ -195,7 +201,7 @@ void loop() {
       DisplaySlide(display_shortcuts[BYE], false);
       GoodNight();
     }
-    if (voltage < BATTERY_LOW) {
+    if (voltage < BATTERY_MIN) {
       DisableAllFire();
       DisplaySlide(display_shortcuts[LOWB], false);
       GoodNight();
@@ -212,7 +218,7 @@ void ReduceValue() {
         if (ohm > 0) {
           volt -= VOLTS_STEP;
           volt = round(volt / VOLTS_STEP) * VOLTS_STEP;
-          volt = constrain(volt, 0, (int)((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+          volt = constrain(volt, 0, round((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
         } else {
           volt = 0;
         }
@@ -259,7 +265,7 @@ void IncreaseValue() {
         if (ohm > 0) {
           volt += VOLTS_STEP;
           volt = round(volt / VOLTS_STEP) * VOLTS_STEP;
-          volt = constrain(volt, 0, (int)((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+          volt = constrain(volt, 0, round((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
         } else {
           volt = 0;
         }
@@ -556,7 +562,7 @@ void ShowVoltage() {
     disp.clear();
     disp.set(symbols['b'], 3);
     if (BATTERY_PERCENTAGE) {
-      disp.digit4(map(constrain(voltage, BATTERY_LOW + voltage_drop, BATTERY_MAX), BATTERY_LOW + voltage_drop, BATTERY_MAX, 0, 100));
+      disp.digit4(map(constrain(voltage, BATTERY_MIN + voltage_drop, BATTERY_MAX), BATTERY_MIN + voltage_drop, BATTERY_MAX, 0, 100));
     } else {
       disp.float_dot(voltage / 1000.0, 2);
     }
@@ -639,15 +645,11 @@ void InitDisplayShortcuts() {
   display_shortcuts.insert(std::pair <byte, char*> (VAPE, c_vape));
 }
 
-void DisplayPing() {
-  disp.timerIsr();
-}
-
 void CheckButtons() {
-  mode_button.tick();
-  down_button.tick();
-  up_button.tick();
   fire_button.tick();
+  mode_button.tick();
+  up_button.tick();
+  down_button.tick();
 }
 
 void Calibration() {
@@ -688,6 +690,21 @@ long ReadVCC() {
   uint8_t low  = ADCL;
   uint8_t high = ADCH;
   long result = (high << 8) | low;
-  result = vcc_const * 1023 * 1000 / result;
+  result = vcc_const * 1023.0 * 1000.0 / result;
   return result;
+}
+
+void InitTimer2() {
+  TCCR2A = 0;
+  TCCR2B = 0;
+  TCCR2A = bit(WGM21);
+  OCR2A = round(15625.0 / (DISPLAY_FREQUENCY * 8.0));
+  TIMSK2 = bit(OCIE2A);
+  TCNT2 = 0;
+  GTCCR = bit(PSRASY);
+  TCCR2B =  bit(CS21) | bit(CS22);
+}
+
+ISR (TIMER2_COMPA_vect) {
+  disp.timerIsr();
 }
