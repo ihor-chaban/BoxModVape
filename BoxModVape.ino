@@ -27,12 +27,12 @@
 #define WATTS_STEP          1
 #define AMPS_STEP           1
 #define OHMS_STEP           0.005
+#define RESIST_STEP         0.001
 #define F_B_DEBOUNCE_TIME   50
 
 // Battery settings
 #define BATTERY_MIN         2800
 #define BATTERY_MAX         4200
-#define BATTERY_RESISTANCE  0.015
 
 // Hardware settings
 #define FIRE_BUTTON_PIN     2
@@ -55,6 +55,7 @@
 #define WATT_POSITION       (VOLT_POSITION + sizeof(volt))
 #define AMP_POSITION        (WATT_POSITION + sizeof(watt))
 #define OHM_POSITION        (AMP_POSITION + sizeof(amp))
+#define RESIST_POSITION     (OHM_POSITION + sizeof(ohm))
 
 OneButton fire_button(FIRE_BUTTON_PIN, true);
 OneButton mode_button(MODE_BUTTON_PIN, true);
@@ -63,7 +64,7 @@ OneButton up_button(UP_BUTTON_PIN, true);
 TM74HC595Display disp(SCLK_PIN, RCLK_PIN, DIO_PIN);
 
 int amp, voltage, watt;
-float vcc_const, volt, ohm;
+float vcc_const, volt, ohm, battery_resistance;
 byte last_fire_mode, last_setting_mode;
 unsigned long standby_time, fire_time, values_update_time, f_b_debounce_time;
 bool settings_mode, f_b_state, f_b_last_state, f_b_reading, sleeping, allow_fire;
@@ -71,22 +72,20 @@ word voltage_array[VOLTAGE_ARR_SIZE], PWM_array[PWM_ARR_SIZE], PWM, voltage_drop
 std::map <char, byte> symbols;
 std::map <byte, char*> display_shortcuts;
 
-enum Modes {VARIVOLT, VARIWATT, HELL, AMP, OHM} mode;
-enum DisplayShortcuts {LOWB = (OHM + 1), BYE, FIRE1, FIRE2, V___, VA__, VAP_, VAPE};
+enum Modes {VARIVOLT, VARIWATT, HELL, AMP, OHM, RESIST} mode;
+enum DisplayShortcuts {LOWB = (RESIST + 1), BYE, FIRE1, FIRE2, V___, VA__, VAP_, VAPE};
 Modes operator++(Modes& i, int) {
   if (!settings_mode) {
     if (i >= HELL) {
       return i = VARIVOLT;
     }
-    byte temp = i;
-    return i = static_cast<Modes> (++temp);
   } else {
-    if (i >= OHM) {
+    if (i >= RESIST) {
       return i = AMP;
-    } else {
-      return i = OHM;
     }
   }
+  byte temp = i;
+  return i = static_cast<Modes> (++temp);
 }
 
 void setup() {
@@ -120,6 +119,7 @@ void setup() {
   watt = EEPROM.readByte(WATT_POSITION);
   amp = EEPROM.readByte(AMP_POSITION);
   ohm = EEPROM.readFloat(OHM_POSITION);
+  battery_resistance = EEPROM.readFloat(RESIST_POSITION);
   voltage = GetVoltage();
   last_fire_mode = mode;
   last_setting_mode = AMP;
@@ -141,18 +141,18 @@ void loop() {
       switch (mode) {
         case VARIVOLT: {
             volt = constrain(volt, 0, round(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
-            voltage_drop = round(volt * 1000.0 / ohm * BATTERY_RESISTANCE);
+            voltage_drop = round(volt * 1000.0 / ohm * battery_resistance);
             AddPWM(round(volt * 1000.0 / (float)voltage * 1023));
             break;
           }
         case VARIWATT: {
             watt = constrain(watt, 0, voltage / 1000.0 / ohm * voltage / 1000.0);
-            voltage_drop = round(sqrt(ohm * watt) * 1000.0 / ohm * BATTERY_RESISTANCE);
+            voltage_drop = round(sqrt(ohm * watt) * 1000.0 / ohm * battery_resistance);
             AddPWM(round(sqrt(ohm * watt) * 1000.0 / (float)voltage * 1023));
             break;
           }
         case HELL: {
-            voltage_drop = round(voltage / ohm * BATTERY_RESISTANCE);
+            voltage_drop = round(voltage / ohm * battery_resistance);
             break;
           }
         default: {
@@ -227,7 +227,7 @@ void ReduceValue() {
     case VARIWATT: {
         if (ohm > 0) {
           watt -= WATTS_STEP;
-          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0 / ohm * (voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0));
+          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * battery_resistance)) / 1000.0 / ohm * (voltage - round(voltage / ohm * battery_resistance)) / 1000.0));
         } else {
           watt = 0;
         }
@@ -241,9 +241,19 @@ void ReduceValue() {
     case OHM: {
         if (amp > 0) {
           ohm -= OHMS_STEP;
-          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * BATTERY_RESISTANCE)) / (amp * 1000.0), 1);
+          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * battery_resistance)) / (amp * 1000.0), 1);
         } else {
           ohm = 0;
+        }
+        break;
+      }
+    case RESIST: {
+        if (amp > 0) {
+          battery_resistance -= RESIST_STEP;
+          battery_resistance = round(battery_resistance / RESIST_STEP) * RESIST_STEP;
+          battery_resistance = constrain(battery_resistance, 0, 0.1);
+        } else {
+          battery_resistance = 0;
         }
         break;
       }
@@ -274,7 +284,7 @@ void IncreaseValue() {
     case VARIWATT: {
         if (ohm > 0) {
           watt += WATTS_STEP;
-          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0 / ohm * (voltage - round(voltage / ohm * BATTERY_RESISTANCE)) / 1000.0));
+          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * battery_resistance)) / 1000.0 / ohm * (voltage - round(voltage / ohm * battery_resistance)) / 1000.0));
         } else {
           watt = 0;
         }
@@ -288,9 +298,19 @@ void IncreaseValue() {
     case OHM: {
         if (amp > 0) {
           ohm += OHMS_STEP;
-          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * BATTERY_RESISTANCE)) / (amp * 1000.0), 1);
+          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * battery_resistance)) / (amp * 1000.0), 1);
         } else {
           ohm = 0;
+        }
+        break;
+      }
+    case RESIST: {
+        if (amp > 0) {
+          battery_resistance += RESIST_STEP;
+          battery_resistance = round(battery_resistance / RESIST_STEP) * RESIST_STEP;
+          battery_resistance = constrain(battery_resistance, 0, 0.1);
+        } else {
+          battery_resistance = 0;
         }
         break;
       }
@@ -386,6 +406,7 @@ void GoodNight() {
   EEPROM.updateByte(WATT_POSITION, watt);
   EEPROM.updateByte(AMP_POSITION, amp);
   EEPROM.updateFloat(OHM_POSITION, ohm);
+  EEPROM.updateFloat(RESIST_POSITION, battery_resistance);
   attachInterrupt(digitalPinToInterrupt(FIRE_BUTTON_PIN), WakeUp, FALLING);
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
 }
@@ -523,8 +544,22 @@ void ShowMainScreen() {
         } else {
           disp.float_dot(ohm, 2);
         }
+        break;
       }
-      break;
+    case RESIST: {
+        disp.set(symbols[display_shortcuts[RESIST][0]] & 0x7F, 3);
+        if (battery_resistance < 0.01) {
+          disp.set(symbols['O'], 2);
+          disp.set(symbols['O'], 1);
+          disp.digit2(battery_resistance * 1000, 0);
+        } else if (battery_resistance < 0.1) {
+          disp.set(symbols['O'], 2);
+          disp.digit2(battery_resistance * 1000, 0);
+        } else {
+          disp.digit4(battery_resistance * 1000, 0);
+        }
+        break;
+      }
   }
 }
 
@@ -549,6 +584,10 @@ void ShowModeTitle() {
       }
     case OHM: {
         DisplaySlide(display_shortcuts[OHM], true);
+        break;
+      }
+    case RESIST: {
+        DisplaySlide(display_shortcuts[RESIST], true);
         break;
       }
   }
@@ -597,6 +636,7 @@ void DisplaySlide(char text[], bool keep_first) {
 
 void InitDisplaySymbols() {
   symbols['b'] = 0x83;
+  symbols['r'] = 0xAF;
   symbols['t'] = 0x87;
   symbols['A'] = 0x88;
   symbols['C'] = 0xC6;
@@ -623,6 +663,7 @@ void InitDisplayShortcuts() {
   char c_hell[] = {'H', 'E', 'L', 'L'};
   char c_amps[] = {'A', 'M', 'P', 'S'};
   char c_coil[] = {'C', 'O', 'I', 'L'};
+  char c_resi[] = {'r', 'E', 'S', 'I'};
   char c_lowb[] = {'L', 'O', 'W', 'b'};
   char c_fir1[] = {'-', '=', '-', '='};
   char c_fir2[] = {'=', '-', '=', '-'};
@@ -636,6 +677,7 @@ void InitDisplayShortcuts() {
   display_shortcuts.insert(std::pair <byte, char*> (HELL, c_hell));
   display_shortcuts.insert(std::pair <byte, char*> (AMP, c_amps));
   display_shortcuts.insert(std::pair <byte, char*> (OHM, c_coil));
+  display_shortcuts.insert(std::pair <byte, char*> (RESIST, c_resi));
   display_shortcuts.insert(std::pair <byte, char*> (LOWB, c_lowb));
   display_shortcuts.insert(std::pair <byte, char*> (FIRE1, c_fir1));
   display_shortcuts.insert(std::pair <byte, char*> (FIRE2, c_fir2));
@@ -671,6 +713,7 @@ void Calibration() {
   EEPROM.updateByte(WATT_POSITION, 0);
   EEPROM.updateByte(AMP_POSITION, 0);
   EEPROM.updateFloat(OHM_POSITION, 0);
+  EEPROM.updateFloat(RESIST_POSITION, 0);
   while (true);
 }
 
