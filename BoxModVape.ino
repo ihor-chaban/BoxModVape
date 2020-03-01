@@ -1,5 +1,6 @@
 /*
-    Box Mod Vape v3.1
+    Box Mod Vape v3.2
+      - added battery resistance menu
       - improved calculations
     Author: Ihor Chaban
     Feb 2020
