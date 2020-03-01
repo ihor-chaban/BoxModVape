@@ -1,10 +1,9 @@
 /*
-    Box Mod Vape v3.0
-      - added options to adjust fire frequency and display update frequency
-      - fire frequency changed to 20 kHz
-      - display update frequency changed to 30 Hz
+    Box Mod Vape v3.2
+      - added battery resistance menu
+      - improved calculations
     Author: Ihor Chaban
-    Jan 2020
+    Mar 2020
 */
 
 #include <ArduinoSTL.h>
@@ -140,19 +139,19 @@ void loop() {
       voltage = GetVoltage();
       switch (mode) {
         case VARIVOLT: {
-            volt = constrain(volt, 0, round(voltage / VOLTS_STEP / 1000.0) * VOLTS_STEP);
-            voltage_drop = round(volt * 1000.0 / ohm * battery_resistance);
-            AddPWM(round(volt * 1000.0 / (float)voltage * 1023));
+            volt = constrain(volt, 0, (voltage - voltage_drop) / 1000.0);
+            voltage_drop = round((volt * battery_resistance * 1000.0) / (ohm + battery_resistance));
+            AddPWM(map(volt * 1000, 0, voltage, 0, 1023));
             break;
           }
         case VARIWATT: {
-            watt = constrain(watt, 0, voltage / 1000.0 / ohm * voltage / 1000.0);
-            voltage_drop = round(sqrt(ohm * watt) * 1000.0 / ohm * battery_resistance);
-            AddPWM(round(sqrt(ohm * watt) * 1000.0 / (float)voltage * 1023));
+            watt = constrain(watt, 0, round(pow(voltage - voltage_drop, 2) / ohm / 1000000.0));
+            voltage_drop = round(sqrt(ohm * watt) * battery_resistance * 1000.0 / ohm);
+            AddPWM(map(sqrt(ohm * watt) * 1000, 0, voltage, 0, 1023));
             break;
           }
         case HELL: {
-            voltage_drop = round(voltage / ohm * battery_resistance);
+            voltage_drop = round((voltage * battery_resistance) / (ohm + battery_resistance));
             break;
           }
         default: {
@@ -218,7 +217,7 @@ void ReduceValue() {
         if (ohm > 0) {
           volt -= VOLTS_STEP;
           volt = round(volt / VOLTS_STEP) * VOLTS_STEP;
-          volt = constrain(volt, 0, round((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+          volt = constrain(volt, 0, (voltage - voltage_drop) / 1000.0);
         } else {
           volt = 0;
         }
@@ -227,7 +226,8 @@ void ReduceValue() {
     case VARIWATT: {
         if (ohm > 0) {
           watt -= WATTS_STEP;
-          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * battery_resistance)) / 1000.0 / ohm * (voltage - round(voltage / ohm * battery_resistance)) / 1000.0));
+          watt = round(watt / WATTS_STEP) * WATTS_STEP;
+          watt = constrain(watt, 0, round(pow(voltage - voltage_drop, 2) / ohm / 1000000.0));
         } else {
           watt = 0;
         }
@@ -235,13 +235,15 @@ void ReduceValue() {
       }
     case AMP: {
         amp -= AMPS_STEP;
+        amp = round(amp / AMPS_STEP) * AMPS_STEP;
         amp = constrain(amp, 0, 100);
         break;
       }
     case OHM: {
         if (amp > 0) {
           ohm -= OHMS_STEP;
-          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * battery_resistance)) / (amp * 1000.0), 1);
+          ohm = round(ohm / OHMS_STEP) * OHMS_STEP;
+          ohm = constrain(ohm, BATTERY_MAX / (amp * 1000.0), 1);
         } else {
           ohm = 0;
         }
@@ -275,7 +277,7 @@ void IncreaseValue() {
         if (ohm > 0) {
           volt += VOLTS_STEP;
           volt = round(volt / VOLTS_STEP) * VOLTS_STEP;
-          volt = constrain(volt, 0, round((voltage - voltage_drop) / VOLTS_STEP / 1000.0) * VOLTS_STEP);
+          volt = constrain(volt, 0, (voltage - voltage_drop) / 1000.0);
         } else {
           volt = 0;
         }
@@ -284,7 +286,8 @@ void IncreaseValue() {
     case VARIWATT: {
         if (ohm > 0) {
           watt += WATTS_STEP;
-          watt = constrain(watt, 0, round((voltage - round(voltage / ohm * battery_resistance)) / 1000.0 / ohm * (voltage - round(voltage / ohm * battery_resistance)) / 1000.0));
+          watt = round(watt / WATTS_STEP) * WATTS_STEP;
+          watt = constrain(watt, 0, round(pow(voltage - voltage_drop, 2) / ohm / 1000000.0));
         } else {
           watt = 0;
         }
@@ -292,13 +295,15 @@ void IncreaseValue() {
       }
     case AMP: {
         amp += AMPS_STEP;
+        amp = round(amp / AMPS_STEP) * AMPS_STEP;
         amp = constrain(amp, 0, 100);
         break;
       }
     case OHM: {
         if (amp > 0) {
           ohm += OHMS_STEP;
-          ohm = constrain(ohm, (float)(BATTERY_MAX - round(BATTERY_MAX / ohm * battery_resistance)) / (amp * 1000.0), 1);
+          ohm = round(ohm / OHMS_STEP) * OHMS_STEP;
+          ohm = constrain(ohm, BATTERY_MAX / (amp * 1000.0), 1);
         } else {
           ohm = 0;
         }
@@ -733,7 +738,7 @@ long ReadVCC() {
   uint8_t low  = ADCL;
   uint8_t high = ADCH;
   long result = (high << 8) | low;
-  result = vcc_const * 1023.0 * 1000.0 / result;
+  result = vcc_const * 1023 * 1000 / result;
   return result;
 }
 
