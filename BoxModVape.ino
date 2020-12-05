@@ -1,13 +1,8 @@
 /*
-    Box Mod Vape v3.3
-      - improved voltage and PWM filtration
-      - added possibility to adjust filtration using a coefficient
-      - fixed calculation of power limitations during firing
-      - added voltage display format toggle
-      - replaced calibration mode with vcc_const set up menu
-      - some code refactoring
+    Box Mod Vape v3.4
+      - added battery min menu
     Author: Ihor Chaban
-    Jun 2020
+    Dec 2020
 */
 
 #include <ArduinoSTL.h>
@@ -32,11 +27,12 @@
 #define OHMS_STEP           0.005
 #define RESIST_STEP         0.001
 #define VCC_STEP            0.001
+#define LBAT_STEP           10
 #define F_B_DEBOUNCE_TIME   100
 
-// Battery settings
-#define BATTERY_MIN         2800
-#define BATTERY_MAX         4200
+// Battery range settings
+#define BATTERY_RANGE_MIN   2500
+#define BATTERY_RANGE_MAX   4200
 
 // Hardware settings
 #define FIRE_BUTTON_PIN     2
@@ -65,6 +61,7 @@
 #define AMP_POSITION        (WATT_POSITION + sizeof(watt))
 #define OHM_POSITION        (AMP_POSITION + sizeof(amp))
 #define RESIST_POSITION     (OHM_POSITION + sizeof(ohm))
+#define BAT_MIN_POSITION    (RESIST_POSITION + sizeof(battery_resistance))
 
 OneButton fire_button(FIRE_BUTTON_PIN, true);
 OneButton mode_button(MODE_BUTTON_PIN, true);
@@ -72,7 +69,7 @@ OneButton down_button(DOWN_BUTTON_PIN, true);
 OneButton up_button(UP_BUTTON_PIN, true);
 TM74HC595Display disp(SCLK_PIN, RCLK_PIN, DIO_PIN);
 
-int amp, prev_voltage, voltage, watt;
+int amp, prev_voltage, voltage, watt, battery_min;
 float vcc_const, volt, ohm, battery_resistance;
 byte last_fire_mode, last_setting_mode;
 unsigned long standby_time, fire_time, values_update_time, f_b_debounce_time, percentage_toggle_time;
@@ -81,15 +78,15 @@ word voltage_buffer[VOLTAGE_BUFFER_SIZE], PWM_buffer[PWM_BUFFER_SIZE], prev_PWM,
 std::map <char, byte> symbols;
 std::map <byte, char*> display_shortcuts;
 
-enum Modes {VARIVOLT, VARIWATT, HELL, AMP, OHM, RESIST, VCC} mode;
-enum DisplayShortcuts {LOWB = (VCC + 1), BYE, FIRE1, FIRE2, V___, VA__, VAP_, VAPE};
+enum Modes {VARIVOLT, VARIWATT, HELL, AMP, OHM, RESIST, VCC, LBAT} mode;
+enum DisplayShortcuts {LOWB = (LBAT + 1), BYE, FIRE1, FIRE2, V___, VA__, VAP_, VAPE};
 Modes operator++(Modes& i, int) {
   if (!settings_mode) {
     if (i >= HELL) {
       return i = VARIVOLT;
     }
   } else {
-    if (i >= VCC) {
+    if (i >= LBAT) {
       return i = AMP;
     }
   }
@@ -127,10 +124,14 @@ void setup() {
   amp = EEPROM.readByte(AMP_POSITION);
   ohm = EEPROM.readFloat(OHM_POSITION);
   battery_resistance = EEPROM.readFloat(RESIST_POSITION);
+  battery_min = EEPROM.readInt(BAT_MIN_POSITION);
+  if (!battery_min) {
+    battery_min = 3000;
+  }
   last_fire_mode = mode;
   last_setting_mode = AMP;
   InitVoltage();
-  if (voltage < BATTERY_MIN) {
+  if (voltage < battery_min) {
     DisableAllFire();
     DisplaySlide(display_shortcuts[LOWB], false);
     GoodNight();
@@ -206,7 +207,7 @@ void loop() {
       DisplaySlide(display_shortcuts[BYE], false);
       GoodNight();
     }
-    if (voltage < BATTERY_MIN) {
+    if (voltage < battery_min) {
       DisableAllFire();
       DisplaySlide(display_shortcuts[LOWB], false);
       GoodNight();
@@ -294,6 +295,7 @@ void GoodNight() {
   EEPROM.updateByte(AMP_POSITION, amp);
   EEPROM.updateFloat(OHM_POSITION, ohm);
   EEPROM.updateFloat(RESIST_POSITION, battery_resistance);
+  EEPROM.updateInt(BAT_MIN_POSITION, battery_min);
   attachInterrupt(digitalPinToInterrupt(FIRE_BUTTON_PIN), WakeUp, FALLING);
   LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
 }
@@ -441,7 +443,7 @@ void ReduceValue() {
         if (amp > 0) {
           ohm -= OHMS_STEP;
           ohm = round(ohm / OHMS_STEP) * OHMS_STEP;
-          ohm = constrain(ohm, BATTERY_MAX / (amp * 1000.0), 1);
+          ohm = constrain(ohm, BATTERY_RANGE_MAX / (amp * 1000.0), 1);
         } else {
           ohm = 0;
         }
@@ -461,6 +463,11 @@ void ReduceValue() {
         vcc_const -= VCC_STEP;
         vcc_const = round(vcc_const / VCC_STEP) * VCC_STEP;
         vcc_const = constrain(vcc_const, 1, 1.2);
+        break;
+      }
+    case LBAT: {
+        battery_min -= LBAT_STEP;
+        battery_min = constrain(battery_min, BATTERY_RANGE_MIN, std::min(voltage, BATTERY_RANGE_MAX));
         break;
       }
   }
@@ -507,7 +514,7 @@ void IncreaseValue() {
         if (amp > 0) {
           ohm += OHMS_STEP;
           ohm = round(ohm / OHMS_STEP) * OHMS_STEP;
-          ohm = constrain(ohm, BATTERY_MAX / (amp * 1000.0), 1);
+          ohm = constrain(ohm, BATTERY_RANGE_MAX / (amp * 1000.0), 1);
         } else {
           ohm = 0;
         }
@@ -527,6 +534,11 @@ void IncreaseValue() {
         vcc_const += VCC_STEP;
         vcc_const = round(vcc_const / VCC_STEP) * VCC_STEP;
         vcc_const = constrain(vcc_const, 1, 1.2);
+        break;
+      }
+    case LBAT: {
+        battery_min += LBAT_STEP;
+        battery_min = constrain(battery_min, BATTERY_RANGE_MIN, std::min(voltage, BATTERY_RANGE_MAX));
         break;
       }
   }
@@ -642,6 +654,11 @@ void ShowMainScreen() {
         }
         break;
       }
+    case LBAT: {
+        disp.set(symbols[display_shortcuts[LBAT][0]], 3);
+        disp.float_dot(battery_min / 1000.0, 2);
+        break;
+      }
   }
 }
 
@@ -656,7 +673,7 @@ void ShowVoltage() {
     disp.clear();
     disp.set(symbols['b'], 3);
     if (percentage) {
-      disp.digit4(map(constrain(voltage, BATTERY_MIN + voltage_drop, BATTERY_MAX), BATTERY_MIN + voltage_drop, BATTERY_MAX, 0, 100));
+      disp.digit4(map(constrain(voltage, battery_min + voltage_drop, BATTERY_RANGE_MAX), battery_min + voltage_drop, BATTERY_RANGE_MAX, 0, 100));
     } else {
       disp.float_dot(voltage / 1000.0, 2);
     }
@@ -693,6 +710,10 @@ void ShowModeTitle() {
       }
     case VCC: {
         DisplaySlide(display_shortcuts[VCC], true);
+        break;
+      }
+    case LBAT: {
+        DisplaySlide(display_shortcuts[LBAT], true);
         break;
       }
   }
@@ -755,6 +776,7 @@ void InitDisplayShortcuts() {
   char c_coil[] = {'C', 'O', 'I', 'L'};
   char c_resi[] = {'r', 'E', 'S', 'I'};
   char c_vcc_[] = {'V', 'C', 'C', ' '};
+  char c_lbat[] = {'L', 'b', 'A', 't'};
   char c_lowb[] = {'L', 'O', 'W', 'b'};
   char c_fir1[] = {'-', '=', '-', '='};
   char c_fir2[] = {'=', '-', '=', '-'};
@@ -770,6 +792,7 @@ void InitDisplayShortcuts() {
   display_shortcuts.insert(std::pair <byte, char*> (OHM, c_coil));
   display_shortcuts.insert(std::pair <byte, char*> (RESIST, c_resi));
   display_shortcuts.insert(std::pair <byte, char*> (VCC, c_vcc_));
+  display_shortcuts.insert(std::pair <byte, char*> (LBAT, c_lbat));
   display_shortcuts.insert(std::pair <byte, char*> (LOWB, c_lowb));
   display_shortcuts.insert(std::pair <byte, char*> (FIRE1, c_fir1));
   display_shortcuts.insert(std::pair <byte, char*> (FIRE2, c_fir2));
